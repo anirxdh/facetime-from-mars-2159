@@ -232,13 +232,12 @@ class ChatRequest(BaseModel):
 async def health():
     openai_key = os.getenv("OPENAI_API_KEY", "")
     elevenlabs_key = os.getenv("ELEVENLABS_API_KEY", "")
+    # Only report whether keys are configured; never return any part of a key.
     return {
         "status": "ok",
         "location": "Mars Colony One",
-        "openai_key_set": bool(openai_key),
-        "openai_key_prefix": openai_key[:8] + "..." if openai_key else "MISSING",
-        "elevenlabs_key_set": bool(elevenlabs_key),
-        "elevenlabs_key_prefix": elevenlabs_key[:8] + "..." if elevenlabs_key else "MISSING",
+        "openai": bool(openai_key.strip()),
+        "elevenlabs": bool(elevenlabs_key.strip()),
     }
 
 

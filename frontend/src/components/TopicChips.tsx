@@ -2,39 +2,61 @@
 
 import { useState, useEffect, useCallback } from "react";
 
-const ALL_TOPICS = [
-  "Ask about Mars food",
-  "What's school like?",
-  "Tell me about Pixel",
-  "Mars sunsets",
-  "Low-grav basketball",
-  "What's RedFeed?",
-];
+import { normalizeCharacter, type CharacterKey } from "@/lib/demoReplies";
 
-function pickRandom(count: number): string[] {
-  const shuffled = [...ALL_TOPICS].sort(() => Math.random() - 0.5);
+const TOPICS: Record<CharacterKey, string[]> = {
+  zeph: [
+    "Ask about Mars food",
+    "What's school like?",
+    "Tell me about Pixel",
+    "Mars sunsets",
+    "Low-grav basketball",
+    "What's RedFeed?",
+  ],
+  chef_riku: [
+    "What should I eat today?",
+    "Ever tasted pizza?",
+    "Mars ingredients",
+    "Your grandparents' stories",
+    "Favorite dessert",
+    "Coffee on Mars?",
+  ],
+  dr_nova: [
+    "How's terraforming going?",
+    "Dust storms",
+    "Plants outside the dome",
+    "Mars sunsets",
+    "Walking without a suit",
+    "Growing up on Mars",
+  ],
+};
+
+function pickRandom(all: string[], count: number): string[] {
+  const shuffled = [...all].sort(() => Math.random() - 0.5);
   return shuffled.slice(0, count);
 }
 
 interface TopicChipsProps {
   onSelect: (text: string) => void;
+  character?: string;
 }
 
-export function TopicChips({ onSelect }: TopicChipsProps) {
+export function TopicChips({ onSelect, character = "zeph" }: TopicChipsProps) {
   const [topics, setTopics] = useState<string[]>([]);
+  const all = TOPICS[normalizeCharacter(character)];
 
   // Pick 3 random topics on mount and reshuffle when component remounts
   useEffect(() => {
-    setTopics(pickRandom(3));
-  }, []);
+    setTopics(pickRandom(all, 3));
+  }, [all]);
 
   const handleClick = useCallback(
     (topic: string) => {
       onSelect(topic);
       // Reshuffle after selecting so next time they see new topics
-      setTopics(pickRandom(3));
+      setTopics(pickRandom(all, 3));
     },
-    [onSelect]
+    [onSelect, all]
   );
 
   if (topics.length === 0) return null;

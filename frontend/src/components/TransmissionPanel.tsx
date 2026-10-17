@@ -15,6 +15,8 @@ import { TopicChips } from "./TopicChips";
 import { MarsClock } from "./MarsClock";
 import { AmbientSound } from "./AmbientSound";
 import { EndCallSummary } from "./EndCallSummary";
+import { CHARACTER_NAMES, INTRO_LINES, normalizeCharacter, pickDemoReply } from "@/lib/demoReplies";
+import { speakAsCharacter, stopSpeaking } from "@/lib/browserVoice";
 
 interface Message {
   role: "user" | "zeph";
@@ -29,6 +31,44 @@ interface TransmissionPanelProps {
 }
 
 const API_BASE = "";
+
+const DEMO_NOTE = "The live AI link is offline, so colonists answer with pre-recorded transmissions spoken by your browser.";
+
+function decodeHeaderText(value: string): string {
+  try { return decodeURIComponent(value); } catch { return value; }
+}
+
+/** Looping band-passed static with the odd crackle, played under browser speech so demo mode keeps the radio feel. */
+function startRadioStatic(ctx: AudioContext): () => void {
+  const len = ctx.sampleRate * 2;
+  const buffer = ctx.createBuffer(1, len, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < len; i++) {
+    const crackle = Math.random() < 0.0008 ? (Math.random() * 2 - 1) * 3 : 0;
+    data[i] = (Math.random() * 2 - 1) * 0.6 + crackle;
+  }
+  const source = ctx.createBufferSource();
+  source.buffer = buffer;
+  source.loop = true;
+  const bandpass = ctx.createBiquadFilter();
+  bandpass.type = "bandpass";
+  bandpass.frequency.value = 1800;
+  bandpass.Q.value = 0.8;
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(0, ctx.currentTime);
+  gain.gain.linearRampToValueAtTime(0.035, ctx.currentTime + 0.15);
+  source.connect(bandpass);
+  bandpass.connect(gain);
+  gain.connect(ctx.destination);
+  source.start();
+  return () => {
+    const t = ctx.currentTime;
+    gain.gain.cancelScheduledValues(t);
+    gain.gain.setValueAtTime(gain.gain.value, t);
+    gain.gain.linearRampToValueAtTime(0, t + 0.1);
+    source.stop(t + 0.12);
+  };
+}
 
 function playRadioBeep(ctx: AudioContext, type: "start" | "end") {
   const now = ctx.currentTime;
@@ -100,6 +140,8 @@ export function TransmissionPanel({
   const [currentTranscript, setCurrentTranscript] = useState("");
   const [signalStatus, setSignalStatus] = useState("CONNECTED");
   const [showEndScreen, setShowEndScreen] = useState(false);
+  const [demoMode, setDemoMode] = useState(false);
+  const messagesRef = useRef<Message[]>([]);
   const startTimeRef = useRef(new Date());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
@@ -111,8 +153,12 @@ export function TransmissionPanel({
   }
 
   useEffect(() => {
+    messagesRef.current = messages;
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // Stop any browser speech if the panel unmounts mid-line.
+  useEffect(() => () => stopSpeaking(), []);
 
   const introCalledRef = useRef(false);
   useEffect(() => {
@@ -122,23 +168,40 @@ export function TransmissionPanel({
     async function fetchIntro() {
       setIsProcessing(true);
       setSignalStatus("RECEIVING");
+      let spokenText: string | null = null;
       try {
-        const res = await fetch(`${API_BASE}/api/intro?character=${character}`);
+        const res = await fetch(`${API_BASE}/api/intro?character=${encodeURIComponent(character)}`);
+        const contentType = res.headers.get("content-type") || "";
         const newSessionId = res.headers.get("X-Session-Id");
         const zephText = res.headers.get("X-Zeph-Text");
-        if (newSessionId) setSessionId(newSessionId);
-        if (res.headers.get("content-type")?.includes("audio")) {
+        if (res.ok && contentType.includes("audio")) {
+          if (newSessionId) setSessionId(newSessionId);
+          setDemoMode(res.headers.get("X-Demo-Mode") === "1");
           const blob = await res.blob();
-          const decoded = zephText ? decodeURIComponent(zephText) : null;
+          const decoded = zephText ? decodeHeaderText(zephText) : null;
           if (decoded) setMessages([{ role: "zeph", text: decoded }]);
+          setIsProcessing(false);
           await playAudioWithEffects(blob);
-        } else {
+        } else if (res.ok && contentType.includes("json")) {
           const data = await res.json();
-          setMessages([{ role: "zeph", text: data.text }]);
+          if (typeof data?.text !== "string" || !data.text) throw new Error("No intro text");
           if (data.session_id) setSessionId(data.session_id);
+          setDemoMode(Boolean(data.demo));
+          setMessages([{ role: "zeph", text: data.text }]);
+          spokenText = data.text;
+        } else {
+          throw new Error(`Intro failed: HTTP ${res.status}`);
         }
       } catch {
-        setMessages([{ role: "zeph", text: "Yo! I'm Zeph, from Mars! Can you hear me?" }]);
+        // API unreachable: open the call with the scripted intro and stay in demo mode.
+        const text = INTRO_LINES[normalizeCharacter(character)];
+        setDemoMode(true);
+        setMessages([{ role: "zeph", text }]);
+        spokenText = text;
+      }
+      if (spokenText) {
+        setIsProcessing(false);
+        await playBrowserVoice(spokenText);
       }
       setIsProcessing(false);
       setSignalStatus("CONNECTED");
@@ -172,6 +235,37 @@ export function TransmissionPanel({
     }
   }, [onFocusChange]);
 
+  /** Demo-mode playback: browser speechSynthesis wrapped in the same radio beeps plus a static bed. */
+  const playBrowserVoice = useCallback(async (text: string) => {
+    setIsPlaying(true);
+    onFocusChange?.("mars");
+    let ctx: AudioContext | null = null;
+    let stopStatic: (() => void) | null = null;
+    try {
+      ctx = getAudioCtx();
+      if (ctx.state === "suspended") await ctx.resume();
+      playRadioBeep(ctx, "start");
+      await new Promise((r) => setTimeout(r, 200));
+      stopStatic = startRadioStatic(ctx);
+    } catch {
+      /* radio effects are optional */
+    }
+    try {
+      await speakAsCharacter(text, character);
+    } catch {
+      /* speech is optional; the transcript is already on screen */
+    }
+    try {
+      stopStatic?.();
+      if (ctx) playRadioBeep(ctx, "end");
+    } catch {
+      /* ignore */
+    }
+    await new Promise((r) => setTimeout(r, 250));
+    setIsPlaying(false);
+    onFocusChange?.("idle");
+  }, [character, onFocusChange]);
+
   const startListening = useCallback(() => {
     if (isProcessing || isPlaying) return;
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -195,38 +289,61 @@ export function TransmissionPanel({
   }, [isProcessing, isPlaying, onFocusChange]);
 
   const sendMessage = useCallback(async (text: string) => {
+    // Functions are stateless, so send recent turns along for context.
+    const history = messagesRef.current.slice(-20).map((m) => ({
+      role: m.role === "user" ? "user" : "assistant",
+      content: m.text,
+    }));
     setMessages((prev) => [...prev, { role: "user", text }]);
     setIsProcessing(true);
     setSignalStatus("SIGNAL IN TRANSIT");
     onFocusChange?.("idle");
+    let spokenText: string | null = null;
     try {
       const res = await fetch(`${API_BASE}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, session_id: sessionId, character }),
+        body: JSON.stringify({ text, session_id: sessionId, character, history }),
       });
+      const contentType = res.headers.get("content-type") || "";
       const newSessionId = res.headers.get("X-Session-Id");
       const zephText = res.headers.get("X-Zeph-Text");
-      if (newSessionId) setSessionId(newSessionId);
-      if (res.headers.get("content-type")?.includes("audio")) {
+      if (res.ok && contentType.includes("audio")) {
+        if (newSessionId) setSessionId(newSessionId);
+        setDemoMode(res.headers.get("X-Demo-Mode") === "1");
         const blob = await res.blob();
         if (zephText) {
-          try { setMessages((prev) => [...prev, { role: "zeph", text: decodeURIComponent(zephText) }]); }
-          catch { setMessages((prev) => [...prev, { role: "zeph", text: zephText }]); }
+          setMessages((prev) => [...prev, { role: "zeph", text: decodeHeaderText(zephText) }]);
         }
+        setIsProcessing(false);
         setSignalStatus("RECEIVING");
         await playAudioWithEffects(blob);
-      } else {
+      } else if (res.ok && contentType.includes("json")) {
         const data = await res.json();
-        setMessages((prev) => [...prev, { role: "zeph", text: data.text }]);
+        if (typeof data?.text !== "string" || !data.text) throw new Error("No reply text");
         if (data.session_id) setSessionId(data.session_id);
+        setDemoMode(Boolean(data.demo));
+        setMessages((prev) => [...prev, { role: "zeph", text: data.text }]);
+        spokenText = data.text;
+      } else {
+        throw new Error(`Chat failed: HTTP ${res.status}`);
       }
     } catch {
-      setMessages((prev) => [...prev, { role: "zeph", text: "...signal dropped. Say that again?" }]);
+      // API unreachable or erroring: answer locally with a pre-written line in character.
+      const alreadySaid = messagesRef.current.filter((m) => m.role === "zeph").map((m) => m.text);
+      const reply = pickDemoReply(character, text, alreadySaid);
+      setDemoMode(true);
+      setMessages((prev) => [...prev, { role: "zeph", text: reply }]);
+      spokenText = reply;
+    }
+    if (spokenText) {
+      setIsProcessing(false);
+      setSignalStatus("RECEIVING");
+      await playBrowserVoice(spokenText);
     }
     setIsProcessing(false);
     setSignalStatus("CONNECTED");
-  }, [sessionId, setSessionId, playAudioWithEffects, onFocusChange]);
+  }, [sessionId, setSessionId, playAudioWithEffects, playBrowserVoice, onFocusChange, character]);
 
   const stopListening = useCallback(async () => {
     if (recognitionRef.current) recognitionRef.current.stop();
@@ -249,7 +366,7 @@ export function TransmissionPanel({
     );
   }
 
-  const charName = character === "chef_riku" ? "Chef Riku" : character === "dr_nova" ? "Dr. Nova" : "Zeph";
+  const charName = CHARACTER_NAMES[normalizeCharacter(character)];
 
   return (
     <div className="h-full flex flex-col justify-end p-4 md:p-6 noise">
@@ -270,6 +387,15 @@ export function TransmissionPanel({
               {signalStatus}
             </span>
           </div>
+          {demoMode && (
+            <span
+              title={DEMO_NOTE}
+              className="hidden md:inline-block px-1.5 py-0.5 rounded border border-white/10 text-white/35 text-[8px] tracking-[0.25em] uppercase whitespace-nowrap"
+              style={{ fontFamily: "var(--font-display)" }}
+            >
+              Demo mode
+            </span>
+          )}
           <AmbientSound />
         </div>
         {/* Right: info + controls */}
@@ -282,7 +408,7 @@ export function TransmissionPanel({
           <div className="w-px h-3 bg-white/10" />
           <button
             type="button"
-            onClick={() => setShowEndScreen(true)}
+            onClick={() => { stopSpeaking(); setShowEndScreen(true); }}
             className="text-red-400/40 hover:text-red-400 text-[9px] tracking-wider uppercase transition-colors cursor-pointer"
             style={{ fontFamily: "var(--font-display)" }}
           >
@@ -351,7 +477,7 @@ export function TransmissionPanel({
       {/* Topic chips */}
       {showTopics && (
         <div className="w-full max-w-lg mx-auto mb-3">
-          <TopicChips onSelect={sendMessage} />
+          <TopicChips onSelect={sendMessage} character={character} />
         </div>
       )}
 
@@ -359,7 +485,7 @@ export function TransmissionPanel({
       <div className="w-full max-w-lg mx-auto">
         {isPlaying && (
           <div className="mb-4">
-            <WaveformVisualizer isActive={isPlaying} />
+            <WaveformVisualizer isActive={isPlaying} label={charName} />
           </div>
         )}
 
@@ -382,6 +508,15 @@ export function TransmissionPanel({
             : isPlaying ? `${charName} is speaking...`
             : "Hold to transmit"}
         </div>
+        {demoMode && (
+          <div
+            title={DEMO_NOTE}
+            className="md:hidden mt-1.5 text-center text-white/30 text-[8px] tracking-[0.25em] uppercase"
+            style={{ fontFamily: "var(--font-display)" }}
+          >
+            Demo mode
+          </div>
+        )}
       </div>
     </div>
   );
