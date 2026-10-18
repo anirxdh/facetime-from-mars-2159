@@ -4,9 +4,10 @@ import { useEffect, useRef } from "react";
 
 interface WaveformVisualizerProps {
   isActive: boolean;
+  label?: string;
 }
 
-export function WaveformVisualizer({ isActive }: WaveformVisualizerProps) {
+export function WaveformVisualizer({ isActive, label = "Zeph" }: WaveformVisualizerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<number>(0);
 
@@ -44,9 +45,9 @@ export function WaveformVisualizer({ isActive }: WaveformVisualizerProps) {
     <div className="flex items-center justify-center">
       <div className="flex items-center gap-2">
         <div className="w-2 h-2 rounded-full bg-orange-400 animate-pulse" />
-        <span className="text-orange-400/70 text-[10px] uppercase tracking-wider">Zeph</span>
+        <span className="text-orange-400/70 text-[10px] uppercase tracking-wider whitespace-nowrap">{label}</span>
       </div>
-      <canvas ref={canvasRef} width={300} height={40} className="mx-3" />
+      <canvas ref={canvasRef} width={300} height={40} className="mx-3 h-10 w-[150px] sm:w-[300px]" />
       <div className="text-orange-400/30 text-[10px] font-mono">AUDIO</div>
     </div>
   );

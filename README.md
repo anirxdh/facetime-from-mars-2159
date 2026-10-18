@@ -2,20 +2,35 @@
 
 **Talk to colonists on Mars via quantum relay. Year 2159.**
 
-**[Live Demo](https://facetime-from-mars-2158--anirxdh.replit.app)**
+**[Live Demo](https://facetime-from-mars.netlify.app)** (hosted on Netlify)
 
 Built for [ElevenLabs x Replit Hackathon](https://elevenlabs.io) (#ElevenHacks)
 
 ---
 
+## Live Mode vs Demo Mode
+
+The live site always works. Without API keys (or if OpenAI or ElevenLabs errors, times out, or runs out of credits) it runs in **demo mode**: each colonist answers with pre-written lines in their own personality, loosely matched to what you asked, and your browser speaks them with its built-in voices (radio beeps, static and glitches stay on). A small "Demo mode" note shows in the call screen.
+
+With keys set, it uses the real path: OpenAI `gpt-4o-mini` writes the reply and ElevenLabs speaks it in the character's voice. Each half falls back on its own, so a missing ElevenLabs key just means AI replies in a browser voice.
+
+### Enable live mode on Netlify
+
+1. Open the site in Netlify: **Site configuration > Environment variables**.
+2. Add `OPENAI_API_KEY` and `ELEVENLABS_API_KEY` (scope: Functions).
+3. Redeploy: **Deploys > Trigger deploy > Deploy site**, or run `netlify deploy --build --prod` from the repo root.
+4. Check `https://facetime-from-mars.netlify.app/api/health`. It returns only booleans, for example `{"openai": true, "elevenlabs": true}`. It never shows any part of a key.
+
 ## Quick Start — Add Your API Keys
 
-You need **two API keys** to run this app:
+You need **two API keys** to run this app in live mode:
 
 | Key | Where to get it |
 |-----|----------------|
 | `OPENAI_API_KEY` | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) |
 | `ELEVENLABS_API_KEY` | [elevenlabs.io/app/settings/api-keys](https://elevenlabs.io/app/settings/api-keys) |
+
+**On Netlify:** see "Enable live mode on Netlify" above.
 
 **On Replit:** Go to Secrets tab (lock icon) → add both keys → restart.
 
@@ -53,19 +68,20 @@ A voice-powered web app where you call people living on Mars in the year 2159. H
 ## Tech Stack
 
 - **Frontend**: Next.js 16 + TypeScript + Tailwind CSS + React Three Fiber
-- **Backend**: FastAPI (Python)
-- **AI Conversation**: Claude API (Anthropic)
-- **Voice Synthesis**: ElevenLabs Text-to-Speech API
+- **Backend**: Netlify Functions (TypeScript) in production; FastAPI (Python) for local development
+- **AI Conversation**: OpenAI `gpt-4o-mini`
+- **Voice Synthesis**: ElevenLabs Text-to-Speech API (browser speechSynthesis in demo mode)
 - **Speech-to-Text**: Browser Web Speech API
-- **Deployment**: Replit
+- **Deployment**: Netlify (originally built and deployed on Replit)
 
 ## How It Works
 
 ```
 User holds transmit button → Browser Speech-to-Text → text
-  → FastAPI backend
-    → Claude API (character-specific prompt → response text)
+  → /api/chat (Netlify Function in production, FastAPI locally)
+    → OpenAI gpt-4o-mini (character-specific prompt → response text)
     → ElevenLabs TTS (character-specific voice → audio)
+    (demo mode: pre-written reply → browser speechSynthesis)
   → Audio returned to browser
   → Radio effects applied via Web Audio API
   → Plays through speaker with waveform visualization
@@ -77,7 +93,16 @@ User holds transmit button → Browser Speech-to-Text → text
 - [OpenAI API key](https://platform.openai.com/api-keys)
 - [ElevenLabs API key](https://elevenlabs.io/app/settings/api-keys)
 
-### Run on Replit (recommended)
+### Deploy on Netlify
+
+`netlify.toml` builds the Next.js app from `frontend/` and routes `/api/*` to the functions in `frontend/netlify/functions`. The site deploys with no environment variables (demo mode); add keys as described above for live mode.
+
+```bash
+netlify link            # or: netlify sites:create
+netlify deploy --build --prod
+```
+
+### Run on Replit
 1. Import this repo on [Replit](https://replit.com)
 2. Add Secrets: `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`
 3. Click Run — both backend and frontend start automatically
@@ -106,18 +131,25 @@ Open http://localhost:3000
 | `/api/characters` | GET | List available characters |
 | `/api/intro?character=zeph` | GET | Get character's intro audio |
 | `/api/chat` | POST | Send message, get voice response |
-| `/api/health` | GET | Health check |
+| `/api/health` | GET | Health check (booleans only: `openai`, `elevenlabs`) |
+
+`/api/intro` and `/api/chat` return `audio/mpeg` with the reply text in the `X-Zeph-Text` header when ElevenLabs works. Otherwise they return JSON `{ text, session_id, audio: null, demo, voice: "browser" }` and the browser speaks the text. `/api/chat` also accepts an optional `history` array of recent turns, since serverless functions do not keep session memory.
 
 ## Project Structure
 
 ```
+├── netlify.toml             # Netlify build + /api/* routing to functions
 ├── backend/
-│   ├── main.py              # FastAPI server, 3 character prompts, Claude + ElevenLabs
+│   ├── main.py              # FastAPI server for local dev, 3 character prompts, OpenAI + ElevenLabs
 │   ├── requirements.txt
 │   └── .env.example
 ├── frontend/
+│   ├── netlify/
+│   │   ├── functions/       # health, characters, intro, chat (production API)
+│   │   └── lib/             # character prompts + OpenAI/ElevenLabs helpers (server only)
 │   ├── src/
 │   │   ├── app/             # Next.js app router
+│   │   ├── lib/             # demo-mode replies + browser voice picker
 │   │   └── components/
 │   │       ├── LandingScreen.tsx      # Character selection cards
 │   │       ├── TransmissionPanel.tsx  # Voice chat interface
