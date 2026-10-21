@@ -1,5 +1,7 @@
 # FaceTime From Mars 2159
 
+> **Write-up:** [Faking a 225 Million Kilometer Phone Call to Mars](https://anirudhvasudevan.com/blog/facetime-from-mars/), the architecture, decisions and lessons. Built by [Anirudh Vasudevan](https://anirudhvasudevan.com/).
+
 **Talk to colonists on Mars via quantum relay. Year 2159.**
 
 **[Live Demo](https://facetime-from-mars.netlify.app)** (hosted on Netlify)
